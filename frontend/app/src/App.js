@@ -1,5 +1,6 @@
 import logo from './logo.svg';
 import './App.css';
+import './balls.css';
 
 function App() {
   return (
@@ -9,6 +10,12 @@ function App() {
         <p>
           Edit <code>src/App.js</code> and save to reload.
         </p>
+        <header> 
+          <text className='balls'>
+            ANDRES
+          </text>
+          <space> </space>LIKES BALLS
+        </header>
         <a
           className="App-link"
           href="https://reactjs.org"
