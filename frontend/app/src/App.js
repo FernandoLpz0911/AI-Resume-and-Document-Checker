@@ -13,7 +13,7 @@ function App() {
         </p>
         <header> 
           <text className='balls'>
-            JOSH
+            Andres and Esteban
           </text>
           <space> </space>LIKES BALLS
         </header>
