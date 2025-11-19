@@ -1,0 +1,314 @@
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Manual Summarizer</title>
+    <!-- Load Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Configure Tailwind to use the Inter font -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Custom scrollbar style for the output area */
+        #summary-output::-webkit-scrollbar {
+            width: 8px;
+        }
+        #summary-output::-webkit-scrollbar-thumb {
+            background-color: #cbd5e1; /* slate-300 */
+            border-radius: 4px;
+        }
+        #summary-output {
+            scrollbar-width: thin;
+            scrollbar-color: #cbd5e1 transparent;
+        }
+    </style>
+    <!-- Load pdf.js for client-side PDF text extraction -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.min.js"></script>
+    <script>
+        // Set up the worker source for pdf.js
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.worker.min.js';
+
+        // Global variables for the environment (required by the platform)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+        // --- Core Application Logic ---
+
+        const elements = {};
+
+        document.addEventListener('DOMContentLoaded', () => {
+            // Cache DOM elements
+            elements.apiKeyInput = document.getElementById('apiKey');
+            elements.fileInput = document.getElementById('fileInput');
+            elements.summarizeButton = document.getElementById('summarizeButton');
+            elements.loadingIndicator = document.getElementById('loadingIndicator');
+            elements.summaryOutput = document.getElementById('summaryOutput');
+            elements.statusMessage = document.getElementById('statusMessage');
+            elements.fileNameDisplay = document.getElementById('fileNameDisplay');
+            elements.fileInfo = document.getElementById('fileInfo');
+            
+            // Set up event listener for the button
+            elements.summarizeButton.addEventListener('click', processManual);
+            
+            // Set up event listener for file selection
+            elements.fileInput.addEventListener('change', handleFileChange);
+            
+            // Update initial state
+            updateUIState(false, 'Ready to summarize your manual. Please select a PDF file.');
+        });
+
+        function updateUIState(isLoading, statusText = '', fileName = '', fileDetails = '') {
+            elements.loadingIndicator.classList.toggle('hidden', !isLoading);
+            elements.summarizeButton.disabled = isLoading || elements.fileInput.files.length === 0 || elements.apiKeyInput.value.trim() === '';
+            elements.statusMessage.textContent = statusText;
+            elements.fileNameDisplay.textContent = fileName;
+            elements.fileInfo.textContent = fileDetails;
+
+            if (isLoading) {
+                elements.summaryOutput.innerHTML = '';
+            }
+        }
+
+        function handleFileChange() {
+            const file = elements.fileInput.files[0];
+            if (file) {
+                if (file.type !== 'application/pdf') {
+                    updateUIState(false, 'Error: Please select a PDF file.', '', '');
+                    elements.summarizeButton.disabled = true;
+                    return;
+                }
+                const fileName = file.name;
+                const fileSize = (file.size / 1024 / 1024).toFixed(2); // MB
+                const fileDetails = `Size: ${fileSize} MB`;
+                updateUIState(false, 'File loaded. Click Summarize to begin.', fileName, fileDetails);
+            } else {
+                updateUIState(false, 'Ready to summarize your manual. Please select a PDF file.');
+            }
+        }
+
+        async function processManual() {
+            const apiKey = elements.apiKeyInput.value.trim();
+            const file = elements.fileInput.files[0];
+
+            if (!apiKey) {
+                updateUIState(false, 'Error: Please enter your Gemini API Key.', elements.fileNameDisplay.textContent, elements.fileInfo.textContent);
+                return;
+            }
+
+            if (!file || file.type !== 'application/pdf') {
+                updateUIState(false, 'Error: Please select a valid PDF file.', '', '');
+                return;
+            }
+
+            updateUIState(true, 'Extracting text from PDF... This might take a moment.', elements.fileNameDisplay.textContent, elements.fileInfo.textContent);
+            
+            try {
+                const pdfText = await extractTextFromPDF(file);
+                
+                // Safety check for very long documents (Gemini can handle large inputs, 
+                // but extreme length can lead to slower responses or limits)
+                if (pdfText.length > 500000) { // Limit to ~500k characters for front-end safety
+                     updateUIState(false, `Warning: Extracted text is very long (${(pdfText.length / 1000).toFixed(0)}k characters). It will be truncated for summarization.`, elements.fileNameDisplay.textContent, elements.fileInfo.textContent);
+                     // Truncate to a manageable size, preserving content structure where possible
+                     const safeText = pdfText.substring(0, 500000);
+                     await getSummary(apiKey, safeText);
+                } else {
+                    updateUIState(true, 'Text extracted. Sending to Gemini for summarization...', elements.fileNameDisplay.textContent, elements.fileInfo.textContent);
+                    await getSummary(apiKey, pdfText);
+                }
+
+
+            } catch (error) {
+                console.error("Processing Error:", error);
+                updateUIState(false, `An error occurred during processing: ${error.message || error}`, elements.fileNameDisplay.textContent, elements.fileInfo.textContent);
+            }
+        }
+
+        /**
+         * Uses PDF.js to extract text from a PDF file blob.
+         * @param {File} file The PDF file object.
+         * @returns {Promise<string>} The extracted text content.
+         */
+        async function extractTextFromPDF(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = async function() {
+                    const arrayBuffer = this.result;
+                    try {
+                        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                        let fullText = '';
+                        
+                        for (let i = 1; i <= pdf.numPages; i++) {
+                            const page = await pdf.getPage(i);
+                            const textContent = await page.getTextContent();
+                            
+                            // Extract text strings and join them, adding a newline for page breaks
+                            const pageText = textContent.items.map(item => item.str).join(' ');
+                            fullText += pageText + '\n\n--- Page Break ---\n\n';
+                        }
+                        resolve(fullText);
+
+                    } catch (e) {
+                        reject(new Error("Failed to parse PDF content. It might be corrupted or complex."));
+                    }
+                };
+                reader.onerror = () => reject(new Error("Failed to read the file."));
+                reader.readAsArrayBuffer(file);
+            });
+        }
+
+        /**
+         * Calls the Gemini API to get a summary of the provided text.
+         * @param {string} apiKey The user's Gemini API key.
+         * @param {string} textToSummarize The extracted text content from the manual.
+         */
+        async function getSummary(apiKey, textToSummarize) {
+            const model = 'gemini-2.5-flash-preview-09-2025';
+            const prompt = `Provide a detailed, concise summary of this technical manual, focusing on key features, installation, troubleshooting steps, and safety precautions. The manual text is provided below:\n\n${textToSummarize}`;
+            
+            const systemPrompt = "You are an expert technical writer. Your task is to provide a detailed, concise summary of the following technical manual or document. Respond in well-structured paragraphs, using bullet points for key information like safety, installation, or features. Do not mention that the text was provided as a string or that you are an AI. Only output the summary.";
+
+            const payload = {
+                contents: [{ parts: [{ text: prompt }] }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+            };
+
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+            // Implement exponential backoff for API call retries
+            const maxRetries = 5;
+            let currentDelay = 1000;
+
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) {
+                        // Check for rate limiting or transient errors
+                        if (response.status === 429 || response.status >= 500) {
+                            if (i < maxRetries - 1) {
+                                console.warn(`API call failed with status ${response.status}. Retrying in ${currentDelay}ms...`);
+                                await new Promise(resolve => setTimeout(resolve, currentDelay));
+                                currentDelay *= 2; // Exponential backoff
+                                continue;
+                            }
+                        }
+                        const errorBody = await response.json();
+                        throw new Error(`API Error: ${errorBody.error?.message || response.statusText}`);
+                    }
+
+                    const result = await response.json();
+                    const summaryText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+
+                    if (summaryText) {
+                        // Display the summary. Convert markdown to basic HTML for display.
+                        const htmlSummary = summaryText
+                            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') // Bold text
+                            .replace(/^- (.*)/gm, '<li>$1</li>') // Simple list items
+                            .replace(/^(#+)\s*(.*)/gm, (match, hashes, content) => { // Headings (h1-h6)
+                                const level = hashes.length > 6 ? 6 : hashes.length;
+                                return `<h${level} class="text-${level+1}xl font-semibold mb-2 mt-4">${content}</h${level}>`;
+                            })
+                            .replace(/\n\n/g, '<br><br>'); // Paragraphs
+                            
+                        elements.summaryOutput.innerHTML = `<p class="whitespace-pre-wrap">${htmlSummary}</p>`;
+                        updateUIState(false, 'Summary successfully generated!');
+                    } else {
+                        throw new Error("AI response was empty or malformed.");
+                    }
+                    return; // Success, exit the function
+
+                } catch (error) {
+                    // Final error handling after retries
+                    updateUIState(false, `Summarization failed: ${error.message}`, elements.fileNameDisplay.textContent, elements.fileInfo.textContent);
+                    console.error("Gemini API Call Failed:", error);
+                    return;
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-gray-50 min-h-screen font-sans">
+
+    <div class="max-w-4xl mx-auto py-12 px-4 sm:px-6 lg:px-8">
+        <header class="text-center mb-10">
+            <h1 class="text-4xl font-extrabold text-indigo-800">Manual AI Summarizer</h1>
+            <p class="mt-3 text-lg text-gray-600">Upload a PDF manual and get a concise, AI-generated summary of its key points.</p>
+        </header>
+
+        <main class="bg-white shadow-2xl rounded-xl p-8 space-y-8">
+            
+            <!-- 1. API Key Input -->
+            <div class="p-5 bg-indigo-50 rounded-lg border border-indigo-200">
+                <label for="apiKey" class="block text-sm font-medium text-indigo-700 mb-2">
+                    Gemini API Key
+                </label>
+                <input type="password" id="apiKey" placeholder="Enter your key here (e.g., AIzaSy...)" 
+                       class="w-full px-4 py-2 border border-indigo-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition duration-150"
+                       value=""
+                       oninput="handleFileChange()"> <!-- Re-evaluate button state on input -->
+                <p class="mt-2 text-xs text-indigo-600">Your key is used only for this session's API call.</p>
+            </div>
+
+            <!-- 2. File Upload Area and Button -->
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6 items-center">
+                <div class="md:col-span-2">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        Upload Manual (PDF only)
+                    </label>
+                    <input type="file" id="fileInput" accept=".pdf" 
+                           class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-100 file:text-indigo-700 hover:file:bg-indigo-200 transition duration-150"/>
+                    <div id="fileNameDisplay" class="mt-3 text-sm font-semibold text-gray-800 truncate"></div>
+                    <div id="fileInfo" class="text-xs text-gray-500"></div>
+                </div>
+                
+                <div class="md:col-span-1 flex justify-end">
+                    <button id="summarizeButton" disabled 
+                            class="w-full md:w-auto px-6 py-3 bg-indigo-600 text-white font-bold rounded-lg shadow-lg hover:bg-indigo-700 transition duration-200 disabled:bg-indigo-300 disabled:cursor-not-allowed flex items-center justify-center">
+                        <svg id="loadingIndicator" class="animate-spin -ml-1 mr-3 h-5 w-5 text-white hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Summarize Manual
+                    </button>
+                </div>
+            </div>
+
+            <!-- 3. Status Message -->
+            <div class="pt-4 border-t border-gray-100">
+                <p id="statusMessage" class="text-sm text-center text-gray-500">
+                    Ready to summarize your manual. Please select a PDF file.
+                </p>
+            </div>
+
+            <!-- 4. Output Area -->
+            <div class="mt-8">
+                <h2 class="text-2xl font-semibold text-gray-800 mb-4">AI Summary</h2>
+                <div id="summaryOutput" class="min-h-[200px] max-h-[600px] overflow-y-auto bg-gray-50 p-6 rounded-lg border border-gray-200 text-gray-700 whitespace-pre-wrap leading-relaxed shadow-inner">
+                    <!-- Summary content will appear here -->
+                    <p class="text-gray-400 italic">The generated summary will appear here after processing.</p>
+                </div>
+            </div>
+
+        </main>
+    </div>
+</body>
+</html>
+message.txt
+17 KB
