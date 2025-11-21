@@ -1,0 +1,7 @@
+django
+djangorestframework
+firebase-admin
+requests
+google-generativeai
+ibm-watsonx-ai
+django-cors-headers
