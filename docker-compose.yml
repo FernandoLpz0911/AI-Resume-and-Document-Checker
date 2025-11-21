@@ -1,0 +1,22 @@
+services:
+  # --- FRONTEND CONTAINER (React) ---
+  frontend:
+    image: node:20-alpine # Uses Node 20 (LTS) to prevent version errors
+    working_dir: /app
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app # Maps your local folder to the container
+    # This command keeps the container alive so we can run commands inside it
+    command: sh -c "npm install && npm run dev -- --host"
+
+  # --- BACKEND CONTAINER (Django) ---
+  backend:
+    image: python:3.11-slim
+    working_dir: /app
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app # Maps your local folder to the container
+    # Simple keep-alive command until we install Django
+    command: python manage.py runserver 0.0.0.0:8000
